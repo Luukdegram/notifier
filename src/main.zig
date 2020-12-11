@@ -1,4 +1,5 @@
 const std = @import("std");
+const Inotify = @import("inotify.zig");
 
 pub fn main() anyerror!void {
     std.log.info("All your codebase are belong to us.", .{});
@@ -10,51 +11,16 @@ pub fn main() anyerror!void {
     var cwd = try std.process.getCwdAlloc(&gpa.allocator);
     defer gpa.allocator.free(cwd);
 
-    std.log.info("cwd: {s}\n", .{cwd});
+    var instance = try Inotify.init(&gpa.allocator);
+    defer instance.deinit();
 
-    const EventMask = packed struct {
-        access: bool = true,
-        modify: bool = true,
-        attrib: bool = true,
-        close_write: bool = false,
-        close_nowrite: bool = false,
-        close: bool = true,
-        open: bool = true,
-        moved_from: bool = false,
-        moved_to: bool = false,
-        moved: bool = true,
-        create: bool = true,
-        delete: bool = true,
-        delete_self: bool = false,
-        move_self: bool = true,
+    try instance.addWatcher("/home/luuk/projects/zoog", .{ .modify = true });
 
-        // following fields are padded and should never be modified
-        pad0: u1 = 0,
-        pad1: u1 = 0,
-        pad: u16 = 0,
+    try try instance.watch(print);
+}
 
-        fn toInt(self: @This()) u32 {
-            return @bitCast(u32, self);
-        }
-    };
-    // setup inotify
-    const instance = try std.os.inotify_init1(0);
-    const handle = try std.os.inotify_add_watch(instance, "/home/luuk/projects/zoog/t.zig", (EventMask{}).toInt());
+fn print(event: Inotify.Event, name: ?[]const u8) !void {
+    std.debug.print("Event: {}\n", .{event});
 
-    var inotify = std.fs.File{ .handle = handle };
-
-    var instance_fd = std.fs.File{ .handle = instance };
-
-    const Event = extern struct {
-        wd: i32,
-        mask: u32,
-        cookie: u32,
-        len: u32,
-
-        fn getMask(self: @This()) EventMask {
-            return @bitCast(EventMask, self.mask);
-        }
-    };
-
-    std.log.info("Event: {}\n", .{instance_fd.reader().readStruct(Event)});
+    if (name) |n| std.debug.print("Name: {s} {d}\n", .{ n, n.len });
 }
