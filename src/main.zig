@@ -16,7 +16,7 @@ pub fn main() anyerror!void {
 
     try instance.addWatcher("/home/luuk/projects/zoog", .{ .modify = true });
 
-    try try instance.watch(print);
+    var frame = async instance.watch(print);
 }
 
 fn print(event: Inotify.Event, name: ?[]const u8) !void {
