@@ -100,7 +100,7 @@ pub fn init(gpa: *Allocator) InstanceInitError!Self {
 /// Closes all descriptors and frees memory
 pub fn deinit(self: *Self) void {
     for (self.watchers.items) |w| {
-        (File{ .handle = w }).close();
+        os.inotify_rm_watch(self.instance.handle, w);
     }
     self.watchers.deinit(self.gpa);
     self.instance.close();
@@ -125,76 +125,37 @@ fn ReturnTypeOf(comptime func: anytype) type {
     return @typeInfo(@TypeOf(func)).Fn.return_type.?;
 }
 
-/// Starts reading from the inotify instance file descriptor
-/// returning the events to the given function
-pub fn watch(self: *Self, comptime trigger: fn (Event, ?[]const u8) anyerror!void) !void {
-    const event_size = @sizeOf(Event);
-    while (true) {
-        try poll(@frame(), self.instance.handle);
-        var buffer: [event_size + std.fs.MAX_PATH_BYTES + 1]u8 = undefined;
-        const len = os.read(self.instance.handle, &buffer) catch |err| switch (err) {
-            error.WouldBlock => continue,
-            else => return err,
-        };
-        if (len == 0) break;
-
-        const event: Event = std.mem.bytesToValue(Event, buffer[0..event_size]);
-        try if (event.len == 0)
-            trigger(event, null)
-        else
-            trigger(event, std.mem.spanZ(buffer[event_size..len]));
-    }
-}
-
 /// Retrieves an event from inotify
-pub fn get(self: *Self) !Event {
+pub fn get(self: *Self, name_buffer: []u8) !?Event {
     suspend {
+        var frame_data = FrameData{ .frame = @frame(), .fd = self.instance.handle };
         var event = os.epoll_event{
             .events = os.EPOLLIN,
             .data = os.epoll_data{
-                .ptr = @ptrToInt(&frame()),
+                .ptr = @ptrToInt(&frame_data),
             },
         };
-        os.epoll_ctl(self.epoll_fd, os.EPOLL_CTL_ADD, self.instance.handle, &event);
+        os.epoll_ctl(self.epoll_fd, os.EPOLL_CTL_ADD, self.instance.handle, &event) catch {};
     }
 
+    const event_size = @sizeOf(Event);
     var buffer: [event_size + std.fs.MAX_PATH_BYTES + 1]u8 = undefined;
     const len = try os.read(self.instance.handle, &buffer);
+    if (len == 0) return null;
 
-    if (len == 0) {
-        //TODO implement quitting inotify because this means the inotify instance has been closed
-    }
-
+    std.mem.copy(u8, name_buffer, buffer[event_size..len]);
     return std.mem.bytesToValue(Event, buffer[0..event_size]);
 }
 
 /// Polls for readiness. `timeout` can be set, -1 means no timeout.
-fn poll(self: Self, timeout: i32) void {
-    while (true) {
-        var events: [1]os.linux.epoll_event = undefined;
-        const count = os.epoll_wait(self.epoll_fd, &events, timeout);
-        for (events[0..count]) |event| {
-            os.epoll_ctl(self.epoll_fd, os.EPOLL_CTL_DEL, self.instance.handle, null) catch {};
-            resume @intToPtr(@Frame(get), event.data.ptr);
-        }
+pub fn poll(self: Self, timeout: i32) void {
+    var events: [1]os.linux.epoll_event = undefined;
+    const count = os.epoll_wait(self.epoll_fd, &events, timeout);
+    for (events[0..count]) |event| {
+        os.epoll_ctl(self.epoll_fd, os.EPOLL_CTL_DEL, self.instance.handle, null) catch {};
+        const frame_data = @intToPtr(*FrameData, event.data.ptr);
+        resume frame_data.frame;
     }
-}
-
-fn poll(frame: anyframe, fd: os.fd_t) !void {
-    const poll_id = try os.epoll_create1();
-    var event = os.epoll_event{
-        .events = os.EPOLLIN,
-        .data = os.epoll_data{
-            .ptr = @ptrToInt(&frame),
-        },
-    };
-    try os.epoll_ctl(
-        poll_id,
-        os.EPOLL_CTL_ADD,
-        fd,
-        &event,
-    );
-    while (true) {}
 }
 
 /// Possible errors when initializing additional watchers to the instance

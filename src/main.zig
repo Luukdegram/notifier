@@ -2,8 +2,6 @@ const std = @import("std");
 const Inotify = @import("inotify.zig");
 
 pub fn main() anyerror!void {
-    std.log.info("All your codebase are belong to us.", .{});
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
@@ -14,13 +12,26 @@ pub fn main() anyerror!void {
     var instance = try Inotify.init(&gpa.allocator);
     defer instance.deinit();
 
-    try instance.addWatcher("/home/luuk/projects/zoog", .{ .modify = true });
+    try instance.addWatcher(cwd, .{ .modify = true });
+    var main_task = async runNotifier(&instance);
 
-    var frame = async instance.watch(print);
+    try nosuspend await main_task;
 }
 
-fn print(event: Inotify.Event, name: ?[]const u8) !void {
-    std.debug.print("Event: {}\n", .{event});
+pub fn runNotifier(instance: *Inotify) !void {
+    var frame = async handleUpdates(instance);
+    while (true) {
+        instance.poll(-1);
+    }
 
-    if (name) |n| std.debug.print("Name: {s} {d}\n", .{ n, n.len });
+    try await frame;
+}
+
+pub fn handleUpdates(instance: *Inotify) !void {
+    var name_buffer: [100]u8 = undefined;
+    var event = try instance.get(&name_buffer);
+    while (event) |ev| : (event = try instance.get(&name_buffer)) {
+        std.debug.print("Event: {}\n", .{ev});
+        std.debug.print("name: {s}\n", .{name_buffer[0..ev.len]});
+    }
 }
